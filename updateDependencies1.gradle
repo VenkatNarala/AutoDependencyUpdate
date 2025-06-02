@@ -1,0 +1,70 @@
+task updateDependencies {
+    doLast {
+        def reportFile = file("build/dependencyUpdates/report.txt")
+        def buildFile = file("build.gradle")
+        def tempBuildFile = file("build.gradle.temp")
+
+        if (!reportFile.exists()) {
+            println "❌ report.txt not found!"
+            return
+        }
+
+        def updatesMap = [:]
+        def updatePattern = ~/^\s*([\w\.-]+):([\w\.-]+) \[(.+?) -> (.+?)\]/
+
+        println "\n📥 Reading report.txt..."
+        reportFile.eachLine { line ->
+            def matcher = line =~ updatePattern
+            if (matcher.matches()) {
+                def group = matcher[0][1]
+                def name = matcher[0][2]
+                def newVersion = matcher[0][4]
+                updatesMap["${group}:${name}"] = newVersion
+                println "Found update: ${group}:${name} => ${newVersion}"
+            }
+        }
+
+        println "\n🛠 Updating build.gradle..."
+        def updatedLines = []
+        def foundKeys = []
+
+        buildFile.eachLine { line ->
+            def depMatch = line =~ /(['"])([\w\.-]+):([\w\.-]+):(.+?)\1/
+            if (depMatch.find()) {
+                def group = depMatch[0][2]
+                def name = depMatch[0][3]
+                def currentVersion = depMatch[0][4]
+                def key = "${group}:${name}"
+
+                if (updatesMap.containsKey(key)) {
+                    def newVersion = updatesMap[key]
+                    println "🔁 Replacing ${key}:${currentVersion} with ${newVersion}"
+                    updatedLines << line.replace(currentVersion, newVersion)
+                    foundKeys << key
+                } else {
+                    updatedLines << line
+                }
+            } else {
+                updatedLines << line
+            }
+        }
+
+        def newDepsAdded = false
+        def newDeps = updatesMap.findAll { !foundKeys.contains(it.key) }
+
+        if (!newDeps.isEmpty()) {
+            updatedLines << "\n// 🔼 New dependencies added by update script"
+            newDeps.each { key, version ->
+                println "➕ Adding new dependency: ${key}:${version}"
+                updatedLines << "implementation '${key}:${version}'"
+                newDepsAdded = true
+            }
+        }
+
+        tempBuildFile.text = updatedLines.join('\n')
+        buildFile.text = tempBuildFile.text
+        tempBuildFile.delete()
+
+        println newDepsAdded ? "\n✅ build.gradle updated with new dependencies." : "\n✅ build.gradle updated."
+    }
+}
