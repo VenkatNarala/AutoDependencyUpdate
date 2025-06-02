@@ -1,0 +1,14 @@
+def updatePattern = ~/^\s*-\s*([\w\.-]+):([\w\.-]+) \[([^\]]+) -> ([^\]]+)\]/
+
+reportFile.eachLine { line ->
+    def matcher = line =~ updatePattern
+    if (matcher.find()) {
+        def group = matcher[0][1]
+        def name = matcher[0][2]
+        def oldVersion = matcher[0][3]
+        def newVersion = matcher[0][4]
+        def key = "${group}:${name}"
+        updatesMap[key] = newVersion
+        println "✅ Found update: ${key} -> ${newVersion}"
+    }
+}
