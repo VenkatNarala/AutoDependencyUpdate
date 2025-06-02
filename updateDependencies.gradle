@@ -1,0 +1,69 @@
+import java.util.regex.Matcher
+
+def reportFile = file('build/dependencyUpdates/report.txt')
+def buildFile = file('build.gradle')
+def tempBuildFile = file('build.gradle.temp')
+
+task updateDependencies {
+    doLast {
+        if (!reportFile.exists()) {
+            println "Dependency update report not found: ${reportFile}"
+            return
+        }
+
+        def dependencyUpdates = [:]
+        def pattern = ~/^\s*([\w\.-]+):([\w\.-]+):\[(.+?) -> (.+?)\]/
+
+        // Parse outdated dependencies from report.txt
+        reportFile.eachLine { line ->
+            def matcher = (line =~ /([\w\.-]+):([\w\.-]+) \[(.*?) -> (.*?)\]/)
+            if (matcher.matches()) {
+                def group = matcher[0][1]
+                def name = matcher[0][2]
+                def oldVersion = matcher[0][3]
+                def newVersion = matcher[0][4]
+                def key = "${group}:${name}"
+                dependencyUpdates[key] = newVersion
+            }
+        }
+
+        // Process build.gradle
+        def updatedLines = []
+        buildFile.eachLine { line ->
+            def match = (line =~ /(['"])([\w\.-]+):([\w\.-]+):(.+?)\1/)
+            if (match.find()) {
+                def fullMatch = match[0]
+                def group = match[0][2]
+                def name = match[0][3]
+                def version = match[0][4]
+                def key = "${group}:${name}"
+                if (dependencyUpdates.containsKey(key)) {
+                    def updatedVersion = dependencyUpdates[key]
+                    println "Updating ${key}:${version} -> ${updatedVersion}"
+                    def updatedLine = line.replaceFirst(/${version}/, updatedVersion)
+                    updatedLines << updatedLine
+                    dependencyUpdates.remove(key)
+                } else {
+                    updatedLines << line
+                }
+            } else {
+                updatedLines << line
+            }
+        }
+
+        // Add new dependencies that weren't in the build.gradle
+        if (!dependencyUpdates.isEmpty()) {
+            updatedLines << "\n// New dependencies added by update script"
+            dependencyUpdates.each { key, version ->
+                updatedLines << "implementation '${key}:${version}'"
+                println "Adding new dependency: ${key}:${version}"
+            }
+        }
+
+        // Write to a temporary file and replace build.gradle
+        tempBuildFile.text = updatedLines.join('\n')
+        buildFile.text = tempBuildFile.text
+        tempBuildFile.delete()
+        println "\n✅ build.gradle has been updated."
+    }
+}
