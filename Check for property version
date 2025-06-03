@@ -1,52 +1,54 @@
-import java.util.regex.*
+task updateDependencies {
+    doLast {
+        def reportFile = file("report.txt")
+        def buildFile = file("build.gradle")
+        def originalText = buildFile.text
 
-def reportFile = file("report.txt")
-def buildFile = file("build.gradle")
-def originalText = buildFile.text
-
-// Step 1: Parse report.txt into a map
-def versionMap = [:]
-reportFile.eachLine { line ->
-    def m = line =~ /-\s+([\w\.\-]+):([\w\.\-]+)\s+\[(.*?)\s+->\s+(.*?)\]/
-    if (m.matches()) {
-        def group = m[0][1]
-        def name = m[0][2]
-        def oldVer = m[0][3]
-        def newVer = m[0][4]
-        versionMap["$group:$name"] = [old: oldVer, new: newVer]
-    }
-}
-
-// Step 2: Update ext { ... } block if present
-def updatedText = originalText.replaceAll(/(?s)(ext\s*\{)(.*?)(\})/) { match, start, body, end ->
-    def updatedBody = body.readLines().collect { line ->
-        def varMatch = line =~ /(\w+)\s*=\s*['"]([^'"]+)['"]/
-        if (varMatch.find()) {
-            def currentValue = varMatch[0][2]
-            def replacement = versionMap.find { k, v -> v.old == currentValue }
-            if (replacement) {
-                return line.replace(currentValue, replacement.value.new)
+        // Parse report.txt into a map
+        def versionMap = [:]
+        reportFile.eachLine { line ->
+            def m = line =~ /-\s+([\w\.\-]+):([\w\.\-]+)\s+\[(.*?)\s+->\s+(.*?)\]/
+            if (m.matches()) {
+                def group = m[0][1]
+                def name = m[0][2]
+                def oldVer = m[0][3]
+                def newVer = m[0][4]
+                versionMap["$group:$name"] = [old: oldVer, new: newVer]
             }
         }
-        return line
-    }.join('\n    ')
-    return "${start}\n    ${updatedBody}\n${end}"
-}
 
-// Step 3: Update or insert dependency versions
-def depPattern = ~/([ \t]*(implementation|api|compile|runtimeOnly|testImplementation|annotationProcessor|classpath)[ \t]+['"])([\w\.\-]+:[\w\.\-]+)(?::([\w\.\-]+|\$\{[\w\.]+\}))?(['"])/
-updatedText = updatedText.replaceAll(depPattern) { match, prefix, conf, dep, version, suffix ->
-    def newVersion = versionMap[dep]?.new
-    if (newVersion) {
-        return "${prefix}${dep}:${newVersion}${suffix}"
-    } else if (!version && versionMap.containsKey(dep)) {
-        return "${prefix}${dep}:${versionMap[dep].new}${suffix}"
+        // Step 1: Update ext block
+        def updatedText = originalText.replaceAll(/(?s)(ext\s*\{)(.*?)(\})/) { match, start, body, end ->
+            def updatedBody = body.readLines().collect { line ->
+                def varMatch = line =~ /(\w+)\s*=\s*['"]([^'"]+)['"]/
+                if (varMatch.find()) {
+                    def currentValue = varMatch[0][2]
+                    def replacement = versionMap.find { k, v -> v.old == currentValue }
+                    if (replacement) {
+                        return line.replace(currentValue, replacement.value.new)
+                    }
+                }
+                return line
+            }.join('\n    ')
+            return "${start}\n    ${updatedBody}\n${end}"
+        }
+
+        // Step 2: Update or insert dependency versions
+        def depPattern = ~/([ \t]*(implementation|api|compile|runtimeOnly|testImplementation|annotationProcessor|classpath)[ \t]+['"])([\w\.\-]+:[\w\.\-]+)(?::([\w\.\-]+|\$\{[\w\.]+\}))?(['"])/
+        updatedText = updatedText.replaceAll(depPattern) { match, prefix, conf, dep, version, suffix ->
+            def newVersion = versionMap[dep]?.new
+            if (newVersion) {
+                return "${prefix}${dep}:${newVersion}${suffix}"
+            } else if (!version && versionMap.containsKey(dep)) {
+                return "${prefix}${dep}:${versionMap[dep].new}${suffix}"
+            }
+            return match
+        }
+
+        // Step 3: Write to file
+        def updatedFile = file("build_updated.gradle")
+        updatedFile.text = updatedText
+
+        println "✅ Updated build.gradle written to: ${updatedFile.absolutePath}"
     }
-    return match
 }
-
-// Step 4: Write to updated file
-def updatedFile = file("build_updated.gradle")
-updatedFile.text = updatedText
-
-println "Updated build.gradle written to ${updatedFile.absolutePath}"
