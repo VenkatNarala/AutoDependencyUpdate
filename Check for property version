@@ -45,10 +45,9 @@ task updateDependencies {
             return match
         }
 
-        // Step 3: Write to file
-        def updatedFile = file("build_updated.gradle")
-        updatedFile.text = updatedText
+        // Step 3: Write back to original build.gradle
+        buildFile.text = updatedText
 
-        println "✅ Updated build.gradle written to: ${updatedFile.absolutePath}"
+        println "✅ build.gradle has been updated successfully!"
     }
 }
