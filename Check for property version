@@ -1,0 +1,100 @@
+task updateDependencies {
+    def reportFile = file('build/dependencyUpdates/report.txt')
+    def buildFile = file('build.gradle')
+    def tempFile = file('build.gradle.tmp')
+
+    doLast {
+        if (!reportFile.exists()) {
+            println "❌ Report file not found at ${reportFile.path}"
+            return
+        }
+
+        def updatesMap = [:]  // key: group:name, value: newVersion
+        def propMap = [:]     // key: group:name, value: propertyName (springBootVersion, etc.)
+
+        // Step 1: Parse report.txt
+        reportFile.eachLine { line ->
+            def matcher = line =~ /^\s*-\s([\w\.-]+):([\w\.-]+)\s+\[([^\]]+)\s+->\s+([^\]]+)]/
+            if (matcher.matches()) {
+                def group = matcher[0][1]
+                def name = matcher[0][2]
+                def newVersion = matcher[0][4]
+                def key = "${group}:${name}"
+                updatesMap[key] = newVersion
+            }
+        }
+
+        println "✅ Found ${updatesMap.size()} updates from report.txt"
+
+        def lines = buildFile.readLines()
+        def foundKeys = [] as Set
+        def updatedLines = []
+
+        lines.each { line ->
+            def updatedLine = line
+
+            // Check for hardcoded dependency version
+            def depMatch = line =~ /(['"])([\w\.-]+):([\w\.-]+)(?::([^'"\$]+))?\1/
+            if (depMatch.find()) {
+                def group = depMatch[0][2]
+                def name = depMatch[0][3]
+                def version = depMatch[0][4]  // may be null
+                def key = "${group}:${name}"
+
+                if (updatesMap.containsKey(key)) {
+                    def newVersion = updatesMap[key]
+                    foundKeys << key
+
+                    if (version != null) {
+                        updatedLine = line.replace("${group}:${name}:${version}", "${group}:${name}:${newVersion}")
+                        println "🔁 Updated ${key} from ${version} to ${newVersion}"
+                    } else {
+                        updatedLine = line.replace("${group}:${name}", "${group}:${name}:${newVersion}")
+                        println "🆕 Added version for ${key}: ${newVersion}"
+                    }
+                }
+            }
+
+            // Check for property version like ${springBootVersion}
+            def propMatch = line =~ /(['"])([\w\.-]+):([\w\.-]+):\$\{(\w+)}\1/
+            if (propMatch.find()) {
+                def group = propMatch[0][2]
+                def name = propMatch[0][3]
+                def property = propMatch[0][4]
+                def key = "${group}:${name}"
+                if (updatesMap.containsKey(key)) {
+                    propMap[key] = property
+                    foundKeys << key
+                }
+            }
+
+            updatedLines << updatedLine
+        }
+
+        // Update the ext block
+        def finalLines = updatedLines.collect { line ->
+            def updated = line
+            propMap.each { key, propName ->
+                def pattern = ~/(?<=\b${propName}\s*=\s*['"])([^'"]+)(?=['"])/
+                if (line ==~ /.*\b${propName}\s*=\s*['"][^'"]+['"].*/) {
+                    def newVersion = updatesMap[key]
+                    updated = line.replaceFirst(pattern, newVersion)
+                    println "🔧 Updated property ${propName} to ${newVersion}"
+                }
+            }
+            return updated
+        }
+
+        tempFile.text = finalLines.join(System.lineSeparator())
+        buildFile.text = tempFile.text
+        tempFile.delete()
+
+        def unused = updatesMap.keySet() - foundKeys
+        if (unused) {
+            println "\n⚠️ Unused updates found (not matched in build.gradle):"
+            unused.each { println " - ${it} -> ${updatesMap[it]}" }
+        } else {
+            println "\n✅ All updates applied successfully."
+        }
+    }
+}
