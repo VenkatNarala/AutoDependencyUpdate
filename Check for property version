@@ -1,84 +1,74 @@
 import java.util.regex.*
 
-task updateDependencyVersions {
+task updateVersionVariablesOnly {
     group = "versioning"
-    description = "Updates dependencies in build.gradle using report.txt"
+    description = "Updates version variables in ext {} block using report.txt"
 
     doLast {
         def reportFile = file("build/dependencyUpdates/report.txt")
         def buildFile = file("build.gradle")
 
-        println "🔍 Starting dependency update..."
+        println "🔍 Starting version variable update..."
         if (!reportFile.exists()) {
-            println "❌ report.txt not found in project root!"
+            println "❌ report.txt not found!"
             return
         }
 
         def buildText = buildFile.text
         def versionMap = [:]
 
-        // ✅ FIXED regex pattern to handle spaces and dash correctly
-        def versionPattern = ~/^\s*-\s*([^\s:]+:[^\s\[]+)\s*\[.*?->\s*([^\]]+)\s*\]/
+        // Parse report.txt for lines like: - group:name [old -> new]
+        def pattern = ~/^\s*-\s*([^\s:]+):([^\s\[]+)\s*\[.*?->\s*([^\]]+)\s*\]/
+        println "📄 Reading report.txt..."
 
-        println "📄 Reading versions from report.txt..."
         reportFile.eachLine { line ->
-            def matcher = line =~ versionPattern
+            def matcher = line =~ pattern
             if (matcher.matches()) {
-                def coord = matcher[0][1].trim()
-                def newVersion = matcher[0][2].trim()
-                versionMap[coord] = newVersion
-                println "🔧 Found update: ${coord} -> ${newVersion}"
+                def group = matcher[0][1].trim()
+                def name = matcher[0][2].trim()
+                def newVersion = matcher[0][3].trim()
+                versionMap[name] = newVersion
+                println "🔧 Will update: ${name} -> ${newVersion}"
             }
         }
 
         if (versionMap.isEmpty()) {
-            println "⚠️ No updates found in report.txt."
+            println "⚠️ No version updates found."
             return
         }
 
-        println "\n🔄 Updating version variables in ext { ... } block..."
-        versionMap.each { coord, newVersion ->
-            def name = coord.split(':')[1]
-            def possibleVars = [
-                "${name}Version",
-                name.replaceAll('-', '') + "Version"
+        def updated = false
+
+        versionMap.each { depName, newVersion ->
+            def candidateVars = [
+                "${depName}Version",
+                depName.replaceAll('-', '') + "Version"
             ]
-            possibleVars.each { varName ->
-                def pattern = ~/(?m)^\s*${varName}\s*=\s*['"]([^'"]+)['"]/
-                if (buildText =~ pattern) {
-                    println "✅ Updated variable ${varName} -> ${newVersion}"
-                    buildText = buildText.replaceAll(pattern) { full, oldVersion ->
-                        "${varName} = '${newVersion}'"
+            def found = false
+
+            candidateVars.each { varName ->
+                def regex = ~/(?m)^(\s*)${varName}\s*=\s*['"]([^'"]+)['"]/
+                if (buildText =~ regex) {
+                    println "✅ Updating variable ${varName} to ${newVersion}"
+                    buildText = buildText.replaceAll(regex) { _, indent, oldVal ->
+                        "${indent}${varName} = '${newVersion}'"
                     }
+                    found = true
+                    updated = true
                 }
+            }
+
+            if (!found) {
+                println "⚠️ No matching variable found for dependency: ${depName}"
             }
         }
 
-        println "\n🔄 Updating dependencies in build.gradle..."
-        versionMap.each { coord, newVersion ->
-            def (group, name) = coord.split(':')
-
-            // ➕ Add version to unversioned dependencies
-            def unversionedPattern = /(["'])${group}:${name}\1/
-            if (buildText =~ unversionedPattern) {
-                println "➕ Adding version for ${group}:${name} -> ${newVersion}"
-                buildText = buildText.replaceAll(unversionedPattern) { _, quote ->
-                    "${quote}${group}:${name}:${newVersion}${quote}"
-                }
-            }
-
-            // 🔁 Replace hardcoded versions
-            def versionedPattern = /(["'])${group}:${name}:[^"']+(["'])/
-            if (buildText =~ versionedPattern) {
-                println "🔁 Replacing version for ${group}:${name} -> ${newVersion}"
-                buildText = buildText.replaceAll(versionedPattern) { _, q1, q2 ->
-                    "${q1}${group}:${name}:${newVersion}${q2}"
-                }
-            }
+        if (updated) {
+            println "💾 Writing updated build.gradle..."
+            buildFile.write(buildText)
+            println "✅ Version variables updated successfully."
+        } else {
+            println "📭 No version variables updated in build.gradle."
         }
-
-        println "\n💾 Writing updates to build.gradle..."
-        buildFile.write(buildText)
-        println "✅ build.gradle has been updated successfully!"
     }
 }
