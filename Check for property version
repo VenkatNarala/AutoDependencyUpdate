@@ -1,60 +1,69 @@
 import java.util.regex.*
 
-def reportFile = file("report.txt")
-def buildFile = file("build.gradle")
+task updateDependencyVersions {
+    description = 'Updates dependency versions in build.gradle using report.txt'
+    group = 'versioning'
 
-def reportLines = reportFile.readLines()
-def buildText = buildFile.text
+    doLast {
+        def reportFile = file("report.txt")
+        def buildFile = file("build.gradle")
 
-// Parse report.txt into map: 'group:name' -> 'newVersion'
-def versionMap = [:]
-def versionPattern = ~/^- ([^:\s]+:[^:\s]+) \[(.+?) -> (.+?)\]$/
-reportLines.each { line ->
-    def matcher = line =~ versionPattern
-    if (matcher.matches()) {
-        def coord = matcher[0][1].trim()
-        def newVersion = matcher[0][3].trim()
-        versionMap[coord] = newVersion
-    }
-}
-
-// Update ext variables
-versionMap.each { coord, newVersion ->
-    def parts = coord.split(':')
-    def name = parts[1]
-
-    def variableCandidates = [
-        "${name}Version",
-        name.replaceAll('-', '') + "Version"
-    ]
-
-    variableCandidates.each { varName ->
-        def extPattern = ~/(?m)(^\s*${varName}\s*=\s*['"])([^'"]+)(['"])/
-        buildText = buildText.replaceAll(extPattern) { all, start, old, end ->
-            "${start}${newVersion}${end}"
+        if (!reportFile.exists()) {
+            println "❌ report.txt not found!"
+            return
         }
+
+        def reportLines = reportFile.readLines()
+        def buildText = buildFile.text
+
+        // Parse report.txt: 'group:name' -> newVersion
+        def versionMap = [:]
+        def versionPattern = ~/^- ([^:\s]+:[^:\s]+) \[(.+?) -> (.+?)\]$/
+        reportLines.each { line ->
+            def matcher = line =~ versionPattern
+            if (matcher.matches()) {
+                def coord = matcher[0][1].trim()
+                def newVersion = matcher[0][3].trim()
+                versionMap[coord] = newVersion
+            }
+        }
+
+        // Update ext variables (like springBootVersion)
+        versionMap.each { coord, newVersion ->
+            def name = coord.split(":")[1]
+
+            def variableCandidates = [
+                "${name}Version",
+                name.replaceAll('-', '') + "Version"
+            ]
+
+            variableCandidates.each { varName ->
+                def extPattern = ~/(?m)(^\s*${varName}\s*=\s*['"])([^'"]+)(['"])/
+                buildText = buildText.replaceAll(extPattern) { all, start, old, end ->
+                    "${start}${newVersion}${end}"
+                }
+            }
+        }
+
+        // Update dependencies
+        versionMap.each { coord, newVersion ->
+            def (group, name) = coord.split(':')
+
+            // Add version if missing
+            def noVersionPattern = ~/(["'])${group}:${name}(["'])/
+            buildText = buildText.replaceAll(noVersionPattern) { m, q1, q2 ->
+                "${q1}${group}:${name}:${newVersion}${q2}"
+            }
+
+            // Update hardcoded versions
+            def withVersionPattern = ~/(["'])${group}:${name}:[^"']+(["'])/
+            buildText = buildText.replaceAll(withVersionPattern) { m, q1, q2 ->
+                "${q1}${group}:${name}:${newVersion}${q2}"
+            }
+        }
+
+        // Overwrite build.gradle
+        buildFile.text = buildText
+        println "✅ build.gradle has been updated using versions from report.txt."
     }
 }
-
-// Update dependencies
-versionMap.each { coord, newVersion ->
-    def parts = coord.split(':')
-    def group = parts[0]
-    def name = parts[1]
-
-    // Case 1: dependency without version
-    def noVersionPattern = ~/(["'])${group}:${name}(["'])/
-    buildText = buildText.replaceAll(noVersionPattern) { full, q1, q2 ->
-        "${q1}${group}:${name}:${newVersion}${q2}"
-    }
-
-    // Case 2: dependency with explicit version
-    def withVersionPattern = ~/(["'])${group}:${name}:[^"']+(["'])/
-    buildText = buildText.replaceAll(withVersionPattern) { full, q1, q2 ->
-        "${q1}${group}:${name}:${newVersion}${q2}"
-    }
-}
-
-buildFile.text = buildText
-
-println "✅ build.gradle has been updated with latest versions from report.txt."
