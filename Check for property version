@@ -1,83 +1,70 @@
-import java.util.regex.*
-
-def reportFile = file("build/dependencyUpdates/report.txt")
-def buildFile = file("build.gradle")
-
 task updateVersionVariables {
+    description = 'Updates version variables in build.gradle based on report.txt'
     doLast {
+        def reportFile = file("build/dependencyUpdates/report.txt")
+        def buildFile = file("build.gradle")
+
         if (!reportFile.exists()) {
-            println "report.txt not found."
+            println "❌ report.txt not found!"
             return
         }
 
-        println "Reading dependency updates from report.txt..."
-        def reportLines = reportFile.readLines()
+        def reportLines = reportFile.readLines().findAll { it.contains("->") && !it.trim().startsWith("#") }
+        def reportMap = [:]
 
-        def updateMap = [:]
-        def reportRegex = ~/Found:\s+([\w\.\-]+):([\w\.\-]+)\s+->\s+([\w\.\-]+)/
-
+        // Parse lines like: org.springframework.boot:spring-boot-gradle-plugin -> 3.5.0
         reportLines.each { line ->
-            def matcher = reportRegex.matcher(line)
+            def matcher = line =~ /^([^\s:]+):([^\s:]+).*->\s*([^\s]+)$/
+            if (matcher.matches()) {
+                def group = matcher[0][1]
+                def name = matcher[0][2]
+                def newVersion = matcher[0][3]
+                reportMap["${group}:${name}"] = newVersion
+            }
+        }
+
+        if (reportMap.isEmpty()) {
+            println "❌ No valid entries in report.txt"
+            return
+        }
+
+        def buildText = buildFile.text
+        def updated = false
+
+        // Loop through each entry like: com.diffplug.spotless:spotless-plugin-gradle -> 6.25.0
+        reportMap.each { dep, newVersion ->
+            def group = dep.split(":")[0]
+            def name = dep.split(":")[1]
+
+            // Search for a variable used in dependency declaration
+            def dependencyPattern = ~/["'].*${group}:${name}:\$\{(\w+)}.*["']/
+            def matcher = buildText =~ dependencyPattern
+
             if (matcher.find()) {
-                def group = matcher.group(1)
-                def name = matcher.group(2)
-                def version = matcher.group(3)
-                def key = "${group}:${name}"
-                updateMap[key] = version
-                println "Parsed from report: ${key} -> ${version}"
-            }
-        }
+                def varName = matcher.group(1)
+                def varPattern = ~/(^|\n)\s*${varName}\s*=\s*['"]([^'"]+)['"]/
+                def versionMatcher = buildText =~ varPattern
 
-        if (updateMap.isEmpty()) {
-            println "No valid dependency updates found in report.txt."
-            return
-        }
-
-        def original = buildFile.text
-        def updated = original
-
-        def varRegex = ~/^\s*(\w+)\s*=\s*'([\w\.\-]+)'\s*$/
-        def variableToDependency = [:]
-
-        // Build reverse map from variable name to dependency (based on usage patterns)
-        original.eachLine { line ->
-            def usageMatcher = ~/["']([\w\.\-]+):([\w\.\-]+):\$\{(\w+)\}["']/.matcher(line)
-            if (usageMatcher.find()) {
-                def depKey = "${usageMatcher.group(1)}:${usageMatcher.group(2)}"
-                def varName = usageMatcher.group(3)
-                variableToDependency[varName] = depKey
-            }
-        }
-
-        if (variableToDependency.isEmpty()) {
-            println "No variable-based dependencies found in build.gradle."
-            return
-        }
-
-        println "Checking for variable updates..."
-        updated = updated.readLines().collect { line ->
-            def varMatcher = varRegex.matcher(line)
-            if (varMatcher.matches()) {
-                def varName = varMatcher.group(1)
-                def oldVersion = varMatcher.group(2)
-                def depKey = variableToDependency[varName]
-
-                if (depKey && updateMap.containsKey(depKey)) {
-                    def newVersion = updateMap[depKey]
-                    if (oldVersion != newVersion) {
-                        println "Updating ${varName}: '${oldVersion}' -> '${newVersion}' (for ${depKey})"
-                        return "    ${varName} = '${newVersion}'"
+                if (versionMatcher.find()) {
+                    def currentVersion = versionMatcher.group(2)
+                    if (currentVersion != newVersion) {
+                        println "✅ Updating ${varName}: ${currentVersion} -> ${newVersion}"
+                        buildText = buildText.replaceFirst(varPattern, "\n    ${varName} = '${newVersion}'")
+                        updated = true
+                    } else {
+                        println "ℹ️  ${varName} already has latest version: ${currentVersion}"
                     }
+                } else {
+                    println "⚠️  Variable ${varName} used in dependency but not found in ext block."
                 }
             }
-            return line
-        }.join('\n')
+        }
 
-        if (updated != original) {
-            buildFile.write(updated)
-            println "build.gradle has been updated with new variable versions."
+        if (updated) {
+            buildFile.write(buildText)
+            println "✅ build.gradle updated with new versions."
         } else {
-            println "No updates were applied to build.gradle."
+            println "ℹ️  No updates needed."
         }
     }
 }
