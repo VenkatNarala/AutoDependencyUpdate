@@ -5,7 +5,7 @@ task updateDependencyVersions {
     description = "Updates dependencies in build.gradle using report.txt"
 
     doLast {
-        def reportFile = file("report.txt")
+        def reportFile = file("build/dependencyUpdates/report.txt")
         def buildFile = file("build.gradle")
 
         println "🔍 Starting dependency update..."
