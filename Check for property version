@@ -1,78 +1,60 @@
 import java.util.regex.*
 
+def reportFile = file("build/dependencyUpdates/report.txt")
+def gradleFile = file("build.gradle")
+
 task updateVersionVariablesOnly {
-    group = "versioning"
-    description = "Updates version variables in ext {} block using report.txt"
-
     doLast {
-        def reportFile = file("build/dependencyUpdates/report.txt")
-        def buildFile = file("build.gradle")
-
-        println "🔍 Starting version variable update..."
-
         if (!reportFile.exists()) {
-            println "❌ report.txt not found!"
+            println "❌ report.txt not found."
             return
         }
 
-        def buildText = buildFile.text
-        def versionMap = [:]
+        def reportLines = reportFile.readLines()
+        def updates = [:]  // Map of group:name -> newVersion
 
-        // Load report.txt: look for lines like "- group:name [old -> new]"
-        def pattern = ~/^\s*-\s*([^\s:]+):([^\s\[]+)\s*\[.*?->\s*([^\]]+)\s*\]/
-        println "📄 Reading report.txt..."
-
-        reportFile.eachLine { line ->
-            def matcher = line =~ pattern
+        // Step 1: Parse report.txt
+        reportLines.each { line ->
+            def matcher = line =~ /([\w\.\-]+):([\w\.\-]+).*->\s*([\w\.\-]+)/
             if (matcher.matches()) {
-                def group = matcher[0][1].trim()
-                def name = matcher[0][2].trim()
-                def newVersion = matcher[0][3].trim()
-                versionMap[name] = newVersion
-                println "🔧 Found: ${group}:${name} -> ${newVersion}"
+                def group = matcher[0][1]
+                def name = matcher[0][2]
+                def newVersion = matcher[0][3]
+                updates["$group:$name"] = newVersion
             }
         }
 
-        if (versionMap.isEmpty()) {
-            println "⚠️ No version updates found."
+        if (updates.isEmpty()) {
+            println "⚠️ No valid dependency updates found in report.txt"
             return
         }
 
+        def gradleText = gradleFile.text
         def updated = false
 
-        versionMap.each { depName, newVersion ->
-            // Try exact match like postgresqlVersion
-            def candidates = [
-                "${depName}Version",
-                depName.replaceAll('-', '') + "Version",
-                depName.tokenize('-').collect { it.capitalize() }.join('').uncapitalize() + "Version"
-            ].unique()
+        // Step 2: Look for variable references like ${springBootVersion}
+        updates.each { fullDep, newVersion ->
+            def (group, name) = fullDep.split(":")
+            def regex = /['"]${group}:${name}:\$\{([a-zA-Z0-9_]+)\}['"]/
+            def matcher = gradleText =~ regex
 
-            def found = false
-
-            candidates.each { varName ->
-                def regex = ~/(?m)^(\s*)${varName}\s*=\s*['"]([^'"]+)['"]/
-                if (buildText =~ regex) {
-                    println "✅ Updating: ${varName} -> ${newVersion}"
-                    buildText = buildText.replaceAll(regex) { _, indent, oldValue ->
-                        "${indent}${varName} = '${newVersion}'"
-                    }
-                    found = true
-                    updated = true
+            if (matcher.find()) {
+                def varName = matcher[0][1]
+                // Step 3: Update variable assignment
+                def varRegex = /(?m)^\s*${varName}\s*=\s*['"]([^'"]+)['"]/
+                gradleText = gradleText.replaceFirst(varRegex) { fullMatch ->
+                    println "✅ Updating variable '${varName}' from '${matcher[0][0]}' to '${newVersion}'"
+                    return fullMatch.replaceAll(/['"]([^'"]+)['"]/, "'${newVersion}'")
                 }
-            }
-
-            if (!found) {
-                println "⚠️ No matching variable found for dependency: ${depName}"
-                println "🔍 Tried variable names: ${candidates.join(', ')}"
+                updated = true
             }
         }
 
         if (updated) {
-            buildFile.text = buildText
-            println "✅ Version variables in build.gradle updated successfully."
+            gradleFile.text = gradleText
+            println "🎉 build.gradle variables updated successfully!"
         } else {
-            println "📭 No variables updated in build.gradle."
+            println "ℹ️ No matching variables found to update."
         }
     }
 }
