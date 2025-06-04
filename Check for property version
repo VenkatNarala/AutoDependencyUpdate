@@ -1,65 +1,60 @@
-task updateDependencies {
-    doLast {
-        def reportFile = file("report.txt")
-        def buildFile = file("build.gradle")
-        def originalText = buildFile.text
+import java.util.regex.*
 
-        // Parse report.txt into a version map
-        def versionMap = [:]
-        reportFile.eachLine { line ->
-            def m = line =~ /-\s+([\w\.\-]+):([\w\.\-]+)\s+\[(.*?) -> (.*?)\]/
-            if (m.matches()) {
-                def group = m[0][1]
-                def name = m[0][2]
-                def oldVer = m[0][3]
-                def newVer = m[0][4]
-                versionMap["$group:$name"] = [old: oldVer, new: newVer]
-            }
-        }
+def reportFile = file("report.txt")
+def buildFile = file("build.gradle")
 
-        def updatedText = originalText
+def reportLines = reportFile.readLines()
+def buildText = buildFile.text
 
-        // 1. Update ext block variables like springBootVersion
-        updatedText = updatedText.replaceAll(/(?s)(ext\s*\{)(.*?)(\})/) { match, start, body, end ->
-            def updatedBody = body.readLines().collect { line ->
-                def varMatch = line =~ /(\w+)\s*=\s*['"]([^'"]+)['"]/
-                if (varMatch.find()) {
-                    def varName = varMatch[0][1]
-                    def varValue = varMatch[0][2]
-                    def updatedLine = line
-                    versionMap.find { k, v ->
-                        if (v.old == varValue) {
-                            updatedLine = line.replace(varValue, v.new)
-                        }
-                    }
-                    return updatedLine
-                }
-                return line
-            }.join('\n    ')
-            return "${start}\n    ${updatedBody}\n${end}"
-        }
-
-        // 2. Update dependencies block
-        def depPattern = ~/([ \t]*(implementation|api|compile|runtimeOnly|testImplementation|annotationProcessor|classpath)[ \t]+['"])([\w\.\-]+:[\w\.\-]+)(?::([^'"]+))?(['"])/
-        updatedText = updatedText.replaceAll(depPattern) { match, prefix, conf, groupAndName, version, suffix ->
-            def newVersion = versionMap[groupAndName]?.new
-            if (!newVersion) return match
-
-            if (version == null) {
-                // No version, insert new one
-                return "${prefix}${groupAndName}:${newVersion}${suffix}"
-            } else if (version.startsWith("\${")) {
-                // Version is variable — already updated in ext, skip here
-                return match
-            } else {
-                // Replace hardcoded version
-                return "${prefix}${groupAndName}:${newVersion}${suffix}"
-            }
-        }
-
-        // 3. Save changes to build.gradle
-        buildFile.text = updatedText
-
-        println "✅ build.gradle has been updated successfully!"
+// Parse report.txt into map: 'group:name' -> 'newVersion'
+def versionMap = [:]
+def versionPattern = ~/^- ([^:\s]+:[^:\s]+) \[(.+?) -> (.+?)\]$/
+reportLines.each { line ->
+    def matcher = line =~ versionPattern
+    if (matcher.matches()) {
+        def coord = matcher[0][1].trim()
+        def newVersion = matcher[0][3].trim()
+        versionMap[coord] = newVersion
     }
 }
+
+// Update ext variables
+versionMap.each { coord, newVersion ->
+    def parts = coord.split(':')
+    def name = parts[1]
+
+    def variableCandidates = [
+        "${name}Version",
+        name.replaceAll('-', '') + "Version"
+    ]
+
+    variableCandidates.each { varName ->
+        def extPattern = ~/(?m)(^\s*${varName}\s*=\s*['"])([^'"]+)(['"])/
+        buildText = buildText.replaceAll(extPattern) { all, start, old, end ->
+            "${start}${newVersion}${end}"
+        }
+    }
+}
+
+// Update dependencies
+versionMap.each { coord, newVersion ->
+    def parts = coord.split(':')
+    def group = parts[0]
+    def name = parts[1]
+
+    // Case 1: dependency without version
+    def noVersionPattern = ~/(["'])${group}:${name}(["'])/
+    buildText = buildText.replaceAll(noVersionPattern) { full, q1, q2 ->
+        "${q1}${group}:${name}:${newVersion}${q2}"
+    }
+
+    // Case 2: dependency with explicit version
+    def withVersionPattern = ~/(["'])${group}:${name}:[^"']+(["'])/
+    buildText = buildText.replaceAll(withVersionPattern) { full, q1, q2 ->
+        "${q1}${group}:${name}:${newVersion}${q2}"
+    }
+}
+
+buildFile.text = buildText
+
+println "✅ build.gradle has been updated with latest versions from report.txt."
