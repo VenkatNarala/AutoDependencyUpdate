@@ -9,6 +9,7 @@ task updateVersionVariablesOnly {
         def buildFile = file("build.gradle")
 
         println "🔍 Starting version variable update..."
+
         if (!reportFile.exists()) {
             println "❌ report.txt not found!"
             return
@@ -17,7 +18,7 @@ task updateVersionVariablesOnly {
         def buildText = buildFile.text
         def versionMap = [:]
 
-        // Parse report.txt for lines like: - group:name [old -> new]
+        // Load report.txt: look for lines like "- group:name [old -> new]"
         def pattern = ~/^\s*-\s*([^\s:]+):([^\s\[]+)\s*\[.*?->\s*([^\]]+)\s*\]/
         println "📄 Reading report.txt..."
 
@@ -28,7 +29,7 @@ task updateVersionVariablesOnly {
                 def name = matcher[0][2].trim()
                 def newVersion = matcher[0][3].trim()
                 versionMap[name] = newVersion
-                println "🔧 Will update: ${name} -> ${newVersion}"
+                println "🔧 Found: ${group}:${name} -> ${newVersion}"
             }
         }
 
@@ -40,17 +41,20 @@ task updateVersionVariablesOnly {
         def updated = false
 
         versionMap.each { depName, newVersion ->
-            def candidateVars = [
+            // Try exact match like postgresqlVersion
+            def candidates = [
                 "${depName}Version",
-                depName.replaceAll('-', '') + "Version"
-            ]
+                depName.replaceAll('-', '') + "Version",
+                depName.tokenize('-').collect { it.capitalize() }.join('').uncapitalize() + "Version"
+            ].unique()
+
             def found = false
 
-            candidateVars.each { varName ->
+            candidates.each { varName ->
                 def regex = ~/(?m)^(\s*)${varName}\s*=\s*['"]([^'"]+)['"]/
                 if (buildText =~ regex) {
-                    println "✅ Updating variable ${varName} to ${newVersion}"
-                    buildText = buildText.replaceAll(regex) { _, indent, oldVal ->
+                    println "✅ Updating: ${varName} -> ${newVersion}"
+                    buildText = buildText.replaceAll(regex) { _, indent, oldValue ->
                         "${indent}${varName} = '${newVersion}'"
                     }
                     found = true
@@ -60,15 +64,15 @@ task updateVersionVariablesOnly {
 
             if (!found) {
                 println "⚠️ No matching variable found for dependency: ${depName}"
+                println "🔍 Tried variable names: ${candidates.join(', ')}"
             }
         }
 
         if (updated) {
-            println "💾 Writing updated build.gradle..."
-            buildFile.write(buildText)
-            println "✅ Version variables updated successfully."
+            buildFile.text = buildText
+            println "✅ Version variables in build.gradle updated successfully."
         } else {
-            println "📭 No version variables updated in build.gradle."
+            println "📭 No variables updated in build.gradle."
         }
     }
 }
