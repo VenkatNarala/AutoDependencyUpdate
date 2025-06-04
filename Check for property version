@@ -5,7 +5,7 @@ task updateDependencyVersions {
     description = "Updates dependencies in build.gradle using report.txt"
 
     doLast {
-        def reportFile = file("build/dependencyUpdates/report.txt")
+        def reportFile = file("report.txt")
         def buildFile = file("build.gradle")
 
         println "🔍 Starting dependency update..."
@@ -16,7 +16,9 @@ task updateDependencyVersions {
 
         def buildText = buildFile.text
         def versionMap = [:]
-        def versionPattern = ~/^- ([^:\s]+:[^:\s]+) \[.+? -> (.+?)\]$/
+
+        // ✅ FIXED regex pattern to handle spaces and dash correctly
+        def versionPattern = ~/^\s*-\s*([^\s:]+:[^\s\[]+)\s*\[.*?->\s*([^\]]+)\s*\]/
 
         println "📄 Reading versions from report.txt..."
         reportFile.eachLine { line ->
@@ -56,17 +58,17 @@ task updateDependencyVersions {
         versionMap.each { coord, newVersion ->
             def (group, name) = coord.split(':')
 
-            // Add version to unversioned dependencies
-            def unversionedPattern = ~/(["'])${group}:${name}(["'])/
+            // ➕ Add version to unversioned dependencies
+            def unversionedPattern = /(["'])${group}:${name}\1/
             if (buildText =~ unversionedPattern) {
                 println "➕ Adding version for ${group}:${name} -> ${newVersion}"
-                buildText = buildText.replaceAll(unversionedPattern) { _, q1, q2 ->
-                    "${q1}${group}:${name}:${newVersion}${q2}"
+                buildText = buildText.replaceAll(unversionedPattern) { _, quote ->
+                    "${quote}${group}:${name}:${newVersion}${quote}"
                 }
             }
 
-            // Update hardcoded versions
-            def versionedPattern = ~/(["'])${group}:${name}:[^"\']+(["'])/
+            // 🔁 Replace hardcoded versions
+            def versionedPattern = /(["'])${group}:${name}:[^"']+(["'])/
             if (buildText =~ versionedPattern) {
                 println "🔁 Replacing version for ${group}:${name} -> ${newVersion}"
                 buildText = buildText.replaceAll(versionedPattern) { _, q1, q2 ->
