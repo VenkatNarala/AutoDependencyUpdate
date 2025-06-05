@@ -1,81 +1,83 @@
 import java.util.regex.*
 
-def reportFile = file("build/dependencyUpdates/report.txt")
-def buildFile = file("build.gradle")
-
 task updateVersionVariables {
+    def reportFile = file('build/dependencyUpdates/report.txt')
+    def gradleFile = file('build.gradle')
+
     doLast {
         if (!reportFile.exists()) {
             println "❌ report.txt not found."
             return
         }
 
-        println "📖 Reading report.txt..."
-        def reportLines = reportFile.readLines().findAll { it.startsWith("- ") }
+        def reportText = reportFile.text
+        def reportPattern = ~/^\s*-\s*([\w\.\-]+):([\w\.\-]+) \[(.+?) -> (.+?)\]\s*$/
         def updates = [:]
 
-        def pattern = ~/^- ([\w\.\-]+):([\w\.\-]+) \[(.*?) -> (.*?)\]$/
+        println "\n🔍 Parsing report.txt for dependency updates..."
 
-        reportLines.each { line ->
-            def matcher = (line =~ pattern)
+        reportText.eachLine { line ->
+            def matcher = reportPattern.matcher(line)
             if (matcher.matches()) {
-                def group = matcher[0][1]
-                def name = matcher[0][2]
-                def oldVersion = matcher[0][3]
-                def newVersion = matcher[0][4]
+                def group = matcher.group(1)
+                def name = matcher.group(2)
+                def oldVersion = matcher.group(3)
+                def newVersion = matcher.group(4)
                 def key = "${group}:${name}"
-                updates[key] = [oldVersion, newVersion]
-                println "✅ Found update for $key: $oldVersion -> $newVersion"
-            } else {
-                println "⚠️ Could not parse line: $line"
+                updates[key] = [old: oldVersion, new: newVersion]
+                println "✅ Found update: ${key} [${oldVersion} -> ${newVersion}]"
             }
         }
 
         if (updates.isEmpty()) {
-            println "❌ No valid dependency updates found in report.txt"
+            println "\n⚠️ No valid dependency updates found in report.txt"
             return
         }
 
-        println "\n🛠 Updating build.gradle..."
-        def buildLines = buildFile.readLines()
-        def updatedLines = []
+        def gradleLines = gradleFile.readLines()
+        def variablePattern = ~/^\s*(\w+)\s*=\s*['"]([\w\.\-]+)['"]\s*$/
+        def variableToDependency = [:]
 
-        def updatedVars = 0
+        println "\n🔍 Scanning build.gradle for variable references..."
 
-        buildLines.each { line ->
-            def trimmed = line.trim()
-            def varMatch = (trimmed =~ /^(\w+)\s*=\s*'([\d\.A-Za-z\-]+)'/)
-
-            if (varMatch.matches()) {
-                def varName = varMatch[0][1]
-                def currentVersion = varMatch[0][2]
-
-                // Check if this variable is used in any dependency that has an update
-                def usedKey = updates.find { key, versions ->
-                    buildLines.any {
-                        it.contains("\${${varName}}") && it.contains(key.split(":")[1])
-                    } && versions[0] == currentVersion
+        gradleLines.eachWithIndex { line, index ->
+            if (line.contains('$')) {
+                updates.each { key, versionInfo ->
+                    def depPattern = /\$\{(\w+)\}/
+                    def depMatcher = line =~ /${key.replace('.', '\\.').replace(':', '\\:')}.*\$\{(\w+)\}/
+                    if (depMatcher.find()) {
+                        def varName = depMatcher.group(1)
+                        variableToDependency[varName] = versionInfo
+                        println "🔗 Matched ${key} to variable \${${varName}}"
+                    }
                 }
-
-                if (usedKey) {
-                    def newVersion = usedKey.value[1]
-                    def newLine = line.replace("'${currentVersion}'", "'${newVersion}'")
-                    updatedLines << newLine
-                    println "🔁 Updated ${varName} from ${currentVersion} to ${newVersion}"
-                    updatedVars++
-                } else {
-                    updatedLines << line
-                }
-            } else {
-                updatedLines << line
             }
         }
 
-        if (updatedVars > 0) {
-            buildFile.text = updatedLines.join("\n")
-            println "\n✅ Updated $updatedVars variable(s) in build.gradle"
-        } else {
-            println "⚠️ No variable versions matched dependencies with updates"
+        if (variableToDependency.isEmpty()) {
+            println "\n⚠️ No variable-based dependencies matched with report.txt entries."
+            return
         }
+
+        println "\n✍️ Updating version variables in ext { } block..."
+
+        def updatedLines = gradleLines.collect { line ->
+            def matcher = variablePattern.matcher(line)
+            if (matcher.matches()) {
+                def varName = matcher.group(1)
+                def currentVersion = matcher.group(2)
+                if (variableToDependency.containsKey(varName)) {
+                    def newVersion = variableToDependency[varName].new
+                    if (currentVersion != newVersion) {
+                        println "🔧 Updating ${varName}: ${currentVersion} -> ${newVersion}"
+                        return line.replace(currentVersion, newVersion)
+                    }
+                }
+            }
+            return line
+        }
+
+        gradleFile.text = updatedLines.join('\n')
+        println "\n✅ Version variables updated successfully in build.gradle"
     }
 }
